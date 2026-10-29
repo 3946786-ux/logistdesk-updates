@@ -23,17 +23,21 @@ jobs:
           cd builder
           python -m pip install -r requirements.txt
           if ($LASTEXITCODE -ne 0) { throw "Dependency install failed" }
-      - name: Compile 2.1 source and run encrypted sync tests
+      - name: Compile 2.1 source and run all regression suites
         shell: pwsh
         run: |
           cd builder
           python -m compileall -q .
           if ($LASTEXITCODE -ne 0) { throw "Compilation failed" }
-          python -m unittest discover -s tests -p test_exchange21.py -v
-          if ($LASTEXITCODE -ne 0) { throw "Contact exchange test failed" }
-          python -m unittest discover -s tests -p test_operations_sync21.py -v
-          if ($LASTEXITCODE -ne 0) { throw "Operations sync test failed" }
-          python -m unittest discover -s tests -p test_upgrade_20.py -v
-          if ($LASTEXITCODE -ne 0) { throw "Encrypted DB migration regression failed" }
-          python -m unittest discover -s tests -p test_partners_12.py -v
-          if ($LASTEXITCODE -ne 0) { throw "Partner regression failed" }
+          $tests = @(
+            "test_exchange21.py",
+            "test_operations_sync21.py",
+            "test_exchange_ui21.py",
+            "test_app12_smoke_12.py",
+            "test_upgrade_20.py",
+            "test_partners_12.py"
+          )
+          foreach ($test in $tests) {
+            python -m unittest discover -s tests -p $test -v
+            if ($LASTEXITCODE -ne 0) { throw "Failed: $test" }
+          }

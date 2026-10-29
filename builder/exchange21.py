@@ -86,6 +86,7 @@ class DeviceExchange21:
         self.transfers = self.root / "transfers"
         self.transfers.mkdir(parents=True, exist_ok=True)
         self._catalog_cache: list[dict] = []
+        self._catalog_last_digest = ""
         with registry.con:
             registry.con.execute("""CREATE TABLE IF NOT EXISTS exchange21_receipts(
                 filename TEXT PRIMARY KEY,
@@ -96,6 +97,7 @@ class DeviceExchange21:
     def close(self) -> None:
         self.phrase = ""
         self._catalog_cache.clear()
+        self._catalog_last_digest = ""
 
     def _check(self):
         if not self.phrase:
@@ -186,8 +188,13 @@ class DeviceExchange21:
                 "inn": str(p["inn"])[:12], "phone": str(p["phone"])[:40],
                 "body_types": body_types[:300], "directions": directions[:1200],
             })
-        packet = _seal_catalog({"format": 21, "entries": items}, self.phrase)
-        atomic_write(self.root / "catalog.ldx21", packet)
+        catalog = {"format": 21, "entries": items}
+        digest = hashlib.sha256(json.dumps(
+            catalog, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        if digest != self._catalog_last_digest or not (self.root / "catalog.ldx21").is_file():
+            packet = _seal_catalog(catalog, self.phrase)
+            atomic_write(self.root / "catalog.ldx21", packet)
+            self._catalog_last_digest = digest
         return len(items)
 
     def refresh_catalog(self) -> int:

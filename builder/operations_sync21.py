@@ -26,7 +26,7 @@ KINDS = ("route", "call", "tracking", "reminder")
 AAD = b"LogistDesk/ops-sync/v21"
 MAX_EVENT_BYTES = 250_000
 MAX_FILES = 10000
-MAX_EVENTS_PER_TICK = 40
+MAX_EVENTS_PER_TICK = 12
 ROUTE_COLS = tuple(x for x in ROUTE_FIELDS if x != "id") + tuple(ROUTE_EXTRA_FIELDS)
 CALL_COLS = tuple(x for x in CARRIER_FIELDS if x not in ("route_id", "source_key"))
 TRACK_COLS = (
@@ -225,17 +225,15 @@ class OperationsSync21:
             values = {k: value[k] for k in CALL_COLS}
             if link:
                 local = link["local_key"]
-                with con:
-                    con.execute("UPDATE carriers SET " +
-                                ",".join(f"{k}=?" for k in CALL_COLS) +
-                                ",route_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                                [values[k] for k in CALL_COLS] + [route_key, int(local)])
+                con.execute("UPDATE carriers SET " +
+                            ",".join(f"{k}=?" for k in CALL_COLS) +
+                            ",route_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                            [values[k] for k in CALL_COLS] + [route_key, int(local)])
             else:
-                with con:
-                    cur = con.execute(
-                        "INSERT INTO carriers(route_id," + ",".join(CALL_COLS) +
-                        ") VALUES (" + ",".join("?" for _ in range(len(CALL_COLS) + 1)) + ")",
-                        [route_key] + [values[k] for k in CALL_COLS])
+                cur = con.execute(
+                    "INSERT INTO carriers(route_id," + ",".join(CALL_COLS) +
+                    ") VALUES (" + ",".join("?" for _ in range(len(CALL_COLS) + 1)) + ")",
+                    [route_key] + [values[k] for k in CALL_COLS])
                 local = str(cur.lastrowid)
             return str(local), ""
         if kind == "tracking":
@@ -248,28 +246,32 @@ class OperationsSync21:
         route_key = self._local_key("route", value["route_uid"])
         call_id = int(self._local_key("call", value["call_uid"])) if value["call_uid"] else None
         key = route_key + "|" + str(value["cycle"]) + "|" + str(value["kind"])
-        with con:
-            con.execute("""
-                INSERT INTO reminders(route_id,carrier_id,cycle,kind,due_at,state)
-                VALUES(?,?,?,?,?,?)
-                ON CONFLICT(route_id,cycle,kind) DO UPDATE SET
-                carrier_id=excluded.carrier_id, due_at=excluded.due_at,
-                state=excluded.state, updated_at=CURRENT_TIMESTAMP
-                """, (route_key, call_id, value["cycle"], value["kind"],
-                      value["due_at"], value["state"]))
+        con.execute("""
+            INSERT INTO reminders(route_id,carrier_id,cycle,kind,due_at,state)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(route_id,cycle,kind) DO UPDATE SET
+            carrier_id=excluded.carrier_id, due_at=excluded.due_at,
+            state=excluded.state, updated_at=CURRENT_TIMESTAMP
+            """, (route_key, call_id, value["cycle"], value["kind"],
+                  value["due_at"], value["state"]))
         return key, ""
 
     def _upsert(self, table: str, primary: str, cols, vals):
         columns = ",".join(cols)
         marks = ",".join("?" for _ in cols)
         updates = ",".join(f"{k}=excluded.{k}" for k in cols if k != primary)
-        with self.db.con:
-            self.db.con.execute(
-                f"INSERT INTO {table}({columns}) VALUES({marks}) "
-                f"ON CONFLICT({primary}) DO UPDATE SET {updates}",
-                vals)
+        self.db.con.execute(
+            f"INSERT INTO {table}({columns}) VALUES({marks}) "
+            f"ON CONFLICT({primary}) DO UPDATE SET {updates}",
+            vals)
 
     def _accept(self, filename: str, sha: str, item: dict) -> str:
+        # Apply the remote row and its UUID mapping in one database transaction.
+        # A crash or malformed event must not leave an unmapped duplicate.
+        with self.db.con:
+            return self._accept_atomic(filename, sha, item)
+
+    def _accept_atomic(self, filename: str, sha: str, item: dict) -> str:
         kind, uid, base, digest, value = (
             item["kind"], item["uid"], item["base"], item["digest"], item["value"])
         link = self._by_uid(kind, uid)
@@ -290,21 +292,20 @@ class OperationsSync21:
             # A new UID never overwrites an unrelated local route or call.
             new_key, origin_id = self._apply(kind, value, None)
             outcome = "created"
-        with self.db.con:
-            if outcome == "applied":
-                self.db.con.execute(
-                    "UPDATE ops21_links SET last_hash=? WHERE kind=? AND uid=?",
-                    (digest, kind, uid))
-            elif outcome == "created":
-                self.db.con.execute("""
-                    INSERT INTO ops21_links(kind,local_key,uid,origin_id,last_hash)
-                    VALUES(?,?,?,?,?)""", (kind, new_key, uid, origin_id, digest))
-            if outcome == "conflict":
-                self.db.con.execute(
-                    "INSERT OR IGNORE INTO ops21_conflicts(filename,kind,uid,details) VALUES(?,?,?,?)",
-                    (filename, kind, uid, "Разные изменения на двух компьютерах"))
+        if outcome == "applied":
             self.db.con.execute(
-                "INSERT INTO ops21_seen(filename,sha256) VALUES(?,?)", (filename, sha))
+                "UPDATE ops21_links SET last_hash=? WHERE kind=? AND uid=?",
+                (digest, kind, uid))
+        elif outcome == "created":
+            self.db.con.execute("""
+                INSERT INTO ops21_links(kind,local_key,uid,origin_id,last_hash)
+                VALUES(?,?,?,?,?)""", (kind, new_key, uid, origin_id, digest))
+        if outcome == "conflict":
+            self.db.con.execute(
+                "INSERT OR IGNORE INTO ops21_conflicts(filename,kind,uid,details) VALUES(?,?,?,?)",
+                (filename, kind, uid, "Разные изменения на двух компьютерах"))
+        self.db.con.execute(
+            "INSERT INTO ops21_seen(filename,sha256) VALUES(?,?)", (filename, sha))
         return outcome
 
     def _emit(self, kind: str, local_key: str, value: dict):

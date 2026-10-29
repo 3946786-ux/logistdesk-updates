@@ -31,7 +31,7 @@ class Exchange21Controls:
         self.exchange = None
         self.operations = None
         self.timer = QTimer(page)
-        self.timer.setInterval(120000)
+        self.timer.setInterval(30000)
         self.timer.timeout.connect(self.poll)
         self.setup_button = QPushButton("Связать компьютеры")
         self.setup_button.clicked.connect(self.configure)
