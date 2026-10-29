@@ -1,17 +1,139 @@
-name: Public Windows runner availability check
+name: LogistDesk 2.0.1 free public Windows build
 on:
   push:
     branches:
       - build/2.0.1
-  workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
-  free-windows-runner:
+  windows-build-and-publish:
     runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Verify Windows runner is available
+      - name: Checkout clean public snapshot
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
         shell: pwsh
         run: |
-          Write-Output "Windows public repo runner is working"
-          python --version
+          python -m pip install --upgrade pip
+          python -m pip install -r builder/requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { throw "Build dependencies failed" }
+
+      - name: Restore artwork from existing PUBLIC LogistDesk 2.0.0 release
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "LogistDesk_2.0.0_portable.zip"
+          gh release download v2.0.0 --repo $env:GITHUB_REPOSITORY --pattern "LogistDesk_2.0.0_portable.zip" --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw "Previous public package download failed" }
+          $old = Join-Path $env:RUNNER_TEMP "previous"
+          Expand-Archive -Path $archive -DestinationPath $old -Force
+          python builder/extract_assets.py (Join-Path $old "LogistDesk.exe") builder/assets
+          if ($LASTEXITCODE -ne 0) { throw "Missing application artwork" }
+
+      - name: Run critical 2.0.1 Windows regression tests
+        shell: pwsh
+        timeout-minutes: 12
+        run: |
+          Set-Location builder
+          python -m compileall -q .
+          if ($LASTEXITCODE -ne 0) { throw "Python compile failed" }
+          $patterns = @(
+            "test_update_timeout_201.py",
+            "test_upgrade_20.py",
+            "test_partners_12.py",
+            "test_document_archive_12.py",
+            "test_documents_12.py",
+            "test_folder_sync_12.py",
+            "test_portable_transfer_12.py",
+            "test_cities_drafts_12.py",
+            "test_ux_12.py",
+            "test_draft_shelf_12.py",
+            "test_popup_12.py",
+            "test_app12_smoke_12.py"
+          )
+          foreach ($pattern in $patterns) {
+            python -m unittest discover -s tests -p $pattern -v
+            if ($LASTEXITCODE -ne 0) { throw "Test failed: $pattern" }
+          }
+
+      - name: Build all four production Windows executables
+        shell: pwsh
+        timeout-minutes: 18
+        run: |
+          Set-Location builder
+          $version = python -c "from version import APP_VERSION; print(APP_VERSION)"
+          if ($version -ne "2.0.1") { throw "Incorrect release version: $version" }
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --icon "assets\logistdesk.ico" --add-data "assets;assets" --collect-all argon2 --collect-all PIL --collect-all winocr --collect-submodules winrt --collect-all pypdf --collect-all docx --collect-all openpyxl --collect-all pypdfium2 --name LogistDesk app20.py
+          if ($LASTEXITCODE -ne 0) { throw "LogistDesk exe build failed" }
+          python -m PyInstaller --noconfirm --clean --onefile --console --collect-all argon2 --name LogistEmergencyExport emergency_export.py
+          if ($LASTEXITCODE -ne 0) { throw "Emergency Export exe build failed" }
+          python -m PyInstaller --noconfirm --clean --onefile --console --collect-all argon2 --name LogistRestore restore_secure_backup.py
+          if ($LASTEXITCODE -ne 0) { throw "Restore exe build failed" }
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name LogistUpdater updater.py
+          if ($LASTEXITCODE -ne 0) { throw "Updater exe build failed" }
+          python build_release.py
+          if ($LASTEXITCODE -ne 0) { throw "Release ZIP creation failed" }
+          if (-not (Test-Path "release/LogistDesk_2.0.1_update.zip")) { throw "Missing update ZIP" }
+          if (-not (Test-Path "release/LogistDesk_2.0.1_portable.zip")) { throw "Missing portable ZIP" }
+
+      - name: Upload validated release archives for recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: LogistDesk-2.0.1-Windows
+          path: |
+            builder/release/LogistDesk_2.0.1_update.zip
+            builder/release/LogistDesk_2.0.1_portable.zip
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish validated Windows archives to public Releases
+        shell: pwsh
+        run: |
+          $tag = "v2.0.1"
+          $update = "builder/release/LogistDesk_2.0.1_update.zip"
+          $portable = "builder/release/LogistDesk_2.0.1_portable.zip"
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $update $portable --repo $env:GITHUB_REPOSITORY --clobber
+          } else {
+            gh release create $tag $update $portable --repo $env:GITHUB_REPOSITORY --title "LogistDesk 2.0.1" --notes "GitHub timeout improvements for slow work/home internet connections."
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Failed to publish release" }
+
+      - name: Publish update manifest to main only after successful release
+        shell: pwsh
+        run: |
+          $update = "builder/release/LogistDesk_2.0.1_update.zip"
+          $sha = (Get-FileHash $update -Algorithm SHA256).Hash.ToLowerInvariant()
+          $manifestPath = Join-Path $env:RUNNER_TEMP "logistdesk-latest.json"
+          $manifest = [ordered]@{
+            version = "2.0.1"
+            package_url = "https://github.com/3946786-ux/logistdesk-updates/releases/latest/download/LogistDesk_2.0.1_update.zip"
+            sha256 = $sha
+          }
+          $manifest | ConvertTo-Json | Set-Content -Path $manifestPath -Encoding utf8
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          if ($LASTEXITCODE -ne 0) { throw "Cannot fetch update main branch" }
+          git checkout -B main origin/main
+          if ($LASTEXITCODE -ne 0) { throw "Cannot switch to update main branch" }
+          Copy-Item $manifestPath latest.json -Force
+          git add latest.json
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "Publish LogistDesk 2.0.1"
+            if ($LASTEXITCODE -ne 0) { throw "Manifest commit failed" }
+            git push origin HEAD:main
+            if ($LASTEXITCODE -ne 0) { throw "Manifest publish failed" }
+          }
