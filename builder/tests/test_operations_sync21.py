@@ -115,6 +115,23 @@ class OperationsSync21Tests(unittest.TestCase):
         self.assertEqual(
             self.home.con.execute("SELECT COUNT(*) FROM ops21_conflicts").fetchone()[0], 1)
 
+    def test_deleted_call_is_removed_on_other_pc(self):
+        self._route(self.work)
+        cid = self.work.save_carrier({
+            "route_id": "R001", "carrier": "Удаляемый тест", "phone": "+7 900 000-00-15"
+        })
+        self.w.sync_once()
+        self.h.sync_once()
+        self.assertEqual(len(self.home.carriers(route_id="R001")), 1)
+        self.work.delete_carrier(cid)
+        self.assertEqual(self.work.get_carrier(cid), None)
+        sent = self.w.sync_once()
+        self.assertEqual(sent["sent"], 1)
+        received = self.h.sync_once()
+        self.assertEqual(received["received"], 1)
+        self.assertEqual(self.home.carriers(route_id="R001"), [])
+        self.assertEqual(self.h.sync_once()["sent"], 0)
+
     def test_ciphertext_and_password_validation(self):
         message = {"format": 21, "device": "test", "uid": "a" * 32,
                    "kind": "route", "base": "", "digest": "0" * 64, "value": {}}

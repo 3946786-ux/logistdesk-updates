@@ -120,6 +120,17 @@ class OperationsSync21:
                     filename TEXT PRIMARY KEY, kind TEXT NOT NULL, uid TEXT NOT NULL,
                     details TEXT NOT NULL, detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+                CREATE TABLE IF NOT EXISTS ops21_tombstones(
+                    uid TEXT PRIMARY KEY, kind TEXT NOT NULL,
+                    local_key TEXT NOT NULL, base_hash TEXT NOT NULL
+                );
+                CREATE TRIGGER IF NOT EXISTS ops21_deleted_carrier
+                BEFORE DELETE ON carriers
+                BEGIN
+                    INSERT OR REPLACE INTO ops21_tombstones(uid,kind,local_key,base_hash)
+                    SELECT uid,kind,local_key,last_hash FROM ops21_links
+                    WHERE kind='call' AND local_key=CAST(OLD.id AS TEXT);
+                END;
             """)
             row = db.con.execute("SELECT uid FROM ops21_device WHERE id=1").fetchone()
             if row is None:
@@ -307,7 +318,14 @@ class OperationsSync21:
                         or _digest(current) != link["last_hash"]):
                     outcome = "conflict"
                 else:
-                    self._apply(kind, value, link)
+                    if kind == "call" and value.get("deleted") is True:
+                        self.db.con.execute(
+                            "DELETE FROM carriers WHERE id=?", (int(link["local_key"]),))
+                        # Do not echo the received deletion as a new local event.
+                        self.db.con.execute(
+                            "DELETE FROM ops21_tombstones WHERE uid=?", (uid,))
+                    else:
+                        self._apply(kind, value, link)
                     outcome = "applied"
         elif base:
             raise MissingDependency("Исходная версия записи ещё не получена")
@@ -360,6 +378,45 @@ class OperationsSync21:
                 (name, hashlib.sha256(packet).hexdigest()))
         return True
 
+    def _emit_tombstones(self, limit: int):
+        """Send actual hard deletions of linked calls; imported deletions never echo."""
+        sent = 0
+        rows = self.db.con.execute(
+            "SELECT * FROM ops21_tombstones ORDER BY rowid LIMIT ?", (limit,)).fetchall()
+        for row in rows:
+            link = self._by_uid("call", row["uid"])
+            if link is None:
+                with self.db.con:
+                    self.db.con.execute(
+                        "DELETE FROM ops21_tombstones WHERE uid=?", (row["uid"],))
+                continue
+            value = {"deleted": True}
+            base = row["base_hash"]
+            digest = _digest(value)
+            if link["last_hash"] == digest:
+                with self.db.con:
+                    self.db.con.execute(
+                        "DELETE FROM ops21_tombstones WHERE uid=?", (row["uid"],))
+                continue
+            packet = _seal({
+                "format": 21, "device": self.device, "uid": row["uid"],
+                "kind": "call", "base": base, "digest": digest, "value": value
+            }, self.phrase)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            name = f"LD21_op_{stamp}_{secrets.token_hex(8)}.ldx21"
+            atomic_write(self.inbox / name, packet)
+            with self.db.con:
+                self.db.con.execute(
+                    "UPDATE ops21_links SET last_hash=? WHERE kind='call' AND uid=?",
+                    (digest, row["uid"]))
+                self.db.con.execute(
+                    "DELETE FROM ops21_tombstones WHERE uid=?", (row["uid"],))
+                self.db.con.execute(
+                    "INSERT INTO ops21_seen(filename,sha256) VALUES(?,?)",
+                    (name, hashlib.sha256(packet).hexdigest()))
+            sent += 1
+        return sent
+
     def sync_once(self):
         self._check()
         files = sorted(self.inbox.glob("LD21_op_*.ldx21"))
@@ -409,4 +466,6 @@ class OperationsSync21:
                     continue
                 if self._emit(kind, key, value):
                     report["sent"] += 1
+        if report["sent"] < MAX_EVENTS_PER_TICK:
+            report["sent"] += self._emit_tombstones(MAX_EVENTS_PER_TICK - report["sent"])
         return report
