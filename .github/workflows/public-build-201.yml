@@ -1,0 +1,17 @@
+name: Public Windows runner availability check
+on:
+  push:
+    branches:
+      - build/2.0.1
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  free-windows-runner:
+    runs-on: windows-latest
+    steps:
+      - name: Verify Windows runner is available
+        shell: pwsh
+        run: |
+          Write-Output "Windows public repo runner is working"
+          python --version
