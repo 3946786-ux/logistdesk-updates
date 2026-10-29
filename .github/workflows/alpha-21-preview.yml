@@ -68,7 +68,7 @@ jobs:
           cd builder
           $v = python -c "from version import APP_VERSION; print(APP_VERSION)"
           if ($v -ne "2.1.0-alpha.1") { throw "Preview version gate failed: $v" }
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --icon "assets\\logistdesk.ico" --add-data "assets;assets" --collect-all argon2 --collect-all PIL --collect-all winocr --collect-submodules winrt --collect-all pypdf --collect-all docx --collect-all openpyxl --collect-all pypdfium2 --name LogistDesk app20.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --icon "assets\\logistdesk.ico" --add-data "assets;assets" --collect-all argon2 --collect-all PIL --collect-all winocr --collect-submodules winrt --collect-all pypdf --collect-all docx --collect-all openpyxl --collect-all pypdfium2 --name LogistDesk app21_preview.py
           if ($LASTEXITCODE -ne 0) { throw "Main EXE failed" }
           python -m PyInstaller --noconfirm --clean --onefile --console --collect-all argon2 --name LogistEmergencyExport emergency_export.py
           if ($LASTEXITCODE -ne 0) { throw "Emergency Export failed" }
