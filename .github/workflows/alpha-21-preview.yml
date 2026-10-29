@@ -1,0 +1,91 @@
+name: Build LogistDesk 2.1 alpha preview (never publish)
+on:
+  push:
+    branches:
+      - test/2.1-sync
+permissions:
+  contents: read
+jobs:
+  windows-alpha-preview:
+    runs-on: windows-latest
+    timeout-minutes: 50
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout isolated public snapshot
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install application and PyInstaller dependencies
+        shell: pwsh
+        run: |
+          cd builder
+          python -m pip install -r requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { throw "Dependencies failed" }
+
+      - name: Retrieve public artwork embedded in 2.0.0 EXE
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "LogistDesk_2.0.0_portable.zip"
+          gh release download v2.0.0 --repo $env:GITHUB_REPOSITORY --pattern "LogistDesk_2.0.0_portable.zip" --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch previously published artwork" }
+          $old = Join-Path $env:RUNNER_TEMP "previous"
+          Expand-Archive -Path $archive -DestinationPath $old -Force
+          python builder/extract_assets.py (Join-Path $old "LogistDesk.exe") builder/assets
+          if ($LASTEXITCODE -ne 0) { throw "Could not restore original app artwork" }
+
+      - name: Compile source and run 2.1 regression tests
+        shell: pwsh
+        run: |
+          cd builder
+          python -m compileall -q .
+          if ($LASTEXITCODE -ne 0) { throw "Compile failed" }
+          $tests = @(
+            "test_exchange21.py",
+            "test_operations_sync21.py",
+            "test_exchange_ui21.py",
+            "test_app12_smoke_12.py",
+            "test_upgrade_20.py",
+            "test_partners_12.py",
+            "test_documents_12.py",
+            "test_folder_sync_12.py"
+          )
+          foreach ($name in $tests) {
+            python -m unittest discover -s tests -p $name -v
+            if ($LASTEXITCODE -ne 0) { throw "Tests failed: $name" }
+          }
+
+      - name: Build four EXEs of 2.1 alpha
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          cd builder
+          $v = python -c "from version import APP_VERSION; print(APP_VERSION)"
+          if ($v -ne "2.1.0-alpha.1") { throw "Preview version gate failed: $v" }
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --icon "assets\\logistdesk.ico" --add-data "assets;assets" --collect-all argon2 --collect-all PIL --collect-all winocr --collect-submodules winrt --collect-all pypdf --collect-all docx --collect-all openpyxl --collect-all pypdfium2 --name LogistDesk app20.py
+          if ($LASTEXITCODE -ne 0) { throw "Main EXE failed" }
+          python -m PyInstaller --noconfirm --clean --onefile --console --collect-all argon2 --name LogistEmergencyExport emergency_export.py
+          if ($LASTEXITCODE -ne 0) { throw "Emergency Export failed" }
+          python -m PyInstaller --noconfirm --clean --onefile --console --collect-all argon2 --name LogistRestore restore_secure_backup.py
+          if ($LASTEXITCODE -ne 0) { throw "Restore failed" }
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name LogistUpdater updater.py
+          if ($LASTEXITCODE -ne 0) { throw "Updater failed" }
+          python build_release.py
+          if ($LASTEXITCODE -ne 0) { throw "Archive build failed" }
+          if (-not (Test-Path "release/LogistDesk_2.1.0-alpha.1_portable.zip")) { throw "Missing preview ZIP" }
+
+      - name: Save alpha archives as Actions artifacts ONLY (not a release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: LogistDesk-2.1.0-alpha.1-Windows-TEST-ONLY
+          path: |
+            builder/release/LogistDesk_2.1.0-alpha.1_portable.zip
+            builder/release/LogistDesk_2.1.0-alpha.1_update.zip
+          retention-days: 7
+          if-no-files-found: error

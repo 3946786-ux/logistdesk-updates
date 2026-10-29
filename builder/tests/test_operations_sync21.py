@@ -51,11 +51,15 @@ class OperationsSync21Tests(unittest.TestCase):
                 INSERT INTO reminders(route_id,carrier_id,cycle,kind,due_at,state)
                 VALUES(?,?,?,?,?,?)""",
                 ("R001", cid, 1, "location_unload", "2026-11-01T11:00", "pending"))
+            self.work.con.execute("""
+                INSERT INTO route_events(route_id,carrier_id,happened_at,event,details)
+                VALUES(?,?,?,?,?)""",
+                ("R001", cid, "2026-11-01T10:00", "Связь с водителем", "Выехал"))
 
         sent = self.w.sync_once()
-        self.assertEqual(sent["sent"], 4)
+        self.assertEqual(sent["sent"], 5)
         report = self.h.sync_once()
-        self.assertEqual(report["received"], 4)
+        self.assertEqual(report["received"], 5)
         self.assertEqual(report["sent"], 0)
         route = self.home.get_route("R001")
         self.assertEqual(route["note"], "Рабочая заметка")
@@ -68,6 +72,9 @@ class OperationsSync21Tests(unittest.TestCase):
         reminder = self.home.con.execute("SELECT * FROM reminders").fetchone()
         self.assertEqual(reminder["carrier_id"], calls[0]["id"])
         self.assertEqual(reminder["due_at"], "2026-11-01T11:00")
+        event = self.home.con.execute("SELECT * FROM route_events").fetchone()
+        self.assertEqual(event["carrier_id"], calls[0]["id"])
+        self.assertEqual(event["details"], "Выехал")
         self.assertEqual(self.h.sync_once()["received"], 0)
 
         route["note"] = "Заметка из дома"

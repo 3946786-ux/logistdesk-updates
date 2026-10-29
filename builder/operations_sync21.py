@@ -22,7 +22,7 @@ from database import ROUTE_FIELDS, ROUTE_EXTRA_FIELDS, CARRIER_FIELDS
 from portable_transfer import _key
 from security import atomic_write
 
-KINDS = ("route", "call", "tracking", "reminder")
+KINDS = ("route", "call", "tracking", "reminder", "event")
 AAD = b"LogistDesk/ops-sync/v21"
 MAX_EVENT_BYTES = 250_000
 MAX_FILES = 10000
@@ -34,6 +34,7 @@ TRACK_COLS = (
     "unload_due_at", "photos_received", "signed_docs_received",
 )
 REMINDER_COLS = ("cycle", "kind", "due_at", "state")
+EVENT_COLS = ("happened_at", "event", "details")
 
 
 def _digest(data: dict) -> str:
@@ -161,14 +162,15 @@ class OperationsSync21:
 
     def _rows(self, kind: str):
         table = {"route": "routes", "call": "carriers",
-                 "tracking": "route_tracking", "reminder": "reminders"}[kind]
+                 "tracking": "route_tracking", "reminder": "reminders",
+                 "event": "route_events"}[kind]
         return [dict(r) for r in self.db.con.execute("SELECT * FROM " + table)]
 
     @staticmethod
     def _key_for(kind: str, r: dict):
         if kind == "route":
             return str(r["id"])
-        if kind == "call":
+        if kind in ("call", "event"):
             return str(r["id"])
         if kind == "tracking":
             return str(r["route_id"])
@@ -182,6 +184,11 @@ class OperationsSync21:
         if kind == "call":
             return {"route_uid": self._required_uid("route", str(r["route_id"])),
                     **{k: r[k] for k in CALL_COLS}}
+        if kind == "event":
+            return {"route_uid": self._required_uid("route", str(r["route_id"])),
+                    "call_uid": (self._required_uid("call", str(r["carrier_id"]))
+                                 if r["carrier_id"] is not None else ""),
+                    **{k: r[k] for k in EVENT_COLS}}
         if kind == "tracking":
             return {"route_uid": self._required_uid("route", str(r["route_id"])),
                     "call_uid": (self._required_uid("call", str(r["carrier_id"]))
@@ -197,6 +204,8 @@ class OperationsSync21:
             row = self.db.con.execute("SELECT * FROM routes WHERE id=?", (key,)).fetchone()
         elif kind == "call":
             row = self.db.con.execute("SELECT * FROM carriers WHERE id=?", (int(key),)).fetchone()
+        elif kind == "event":
+            row = self.db.con.execute("SELECT * FROM route_events WHERE id=?", (int(key),)).fetchone()
         elif kind == "tracking":
             row = self.db.con.execute("SELECT * FROM route_tracking WHERE route_id=?", (key,)).fetchone()
         else:
@@ -236,6 +245,20 @@ class OperationsSync21:
                     [route_key] + [values[k] for k in CALL_COLS])
                 local = str(cur.lastrowid)
             return str(local), ""
+        if kind == "event":
+            route_key = self._local_key("route", value["route_uid"])
+            call_id = int(self._local_key("call", value["call_uid"])) if value["call_uid"] else None
+            if link:
+                con.execute("UPDATE route_events SET route_id=?,carrier_id=?,"
+                            "happened_at=?,event=?,details=? WHERE id=?",
+                            [route_key, call_id] + [value[k] for k in EVENT_COLS]
+                            + [int(link["local_key"])])
+                return link["local_key"], ""
+            cur = con.execute(
+                "INSERT INTO route_events(route_id,carrier_id,happened_at,event,details)"
+                " VALUES(?,?,?,?,?)",
+                [route_key, call_id] + [value[k] for k in EVENT_COLS])
+            return str(cur.lastrowid), ""
         if kind == "tracking":
             route_key = self._local_key("route", value["route_uid"])
             call_id = int(self._local_key("call", value["call_uid"])) if value["call_uid"] else None
