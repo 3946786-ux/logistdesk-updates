@@ -35,8 +35,13 @@ def _key(passphrase: str, salt: bytes) -> bytes:
                           n=2**14, r=8, p=1, dklen=32, maxmem=32*1024*1024)
 
 
-def _dump(registry: PartnerRegistry, include_private: bool) -> dict:
+def _dump(registry: PartnerRegistry, include_private: bool,
+          partner_ids: set[int] | None = None) -> dict:
     partners = [dict(x) for x in registry.con.execute("SELECT * FROM partners ORDER BY id")]
+    if partner_ids is not None:
+        partners = [p for p in partners if int(p["id"]) in partner_ids]
+        if len(partners) != len(partner_ids):
+            raise ValueError("Один из выбранных контрагентов не найден")
     if len(partners) > 50000:
         raise ValueError("Слишком много контактов для одной выгрузки")
     result = []
@@ -56,8 +61,9 @@ def _dump(registry: PartnerRegistry, include_private: bool) -> dict:
 
 
 def export_contacts(registry: PartnerRegistry, destination: str | Path,
-                    passphrase: str, *, include_private: bool = False) -> dict:
-    bundle = _dump(registry, include_private)
+                    passphrase: str, *, include_private: bool = False,
+                    partner_ids: set[int] | None = None) -> dict:
+    bundle = _dump(registry, include_private, partner_ids)
     plaintext = json.dumps(bundle, ensure_ascii=False, separators=(",", ":")).encode()
     if len(plaintext) > MAX_FILE_BYTES:
         raise ValueError("База слишком большая для одного защищённого экспорта")

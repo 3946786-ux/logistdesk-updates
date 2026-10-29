@@ -66,6 +66,11 @@ class LogistWindow12(stable_app.LogistWindow):
 
         def save_and_index_carrier(record, *args, **kwargs):
             carrier_id = original_save_carrier(record, *args, **kwargs)
+            # WORK mode keeps the full partner database only on the home PC.
+            # Saving a call never auto-creates a full partner card at work.
+            from exchange_ui21 import device_role
+            if device_role(self.db) == "work":
+                return carrier_id
             try:
                 partner_id = register_call(self.partner_page.registry, dict(record), carrier_id)
                 if partner_id is not None:

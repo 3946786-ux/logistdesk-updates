@@ -185,6 +185,8 @@ class RegistryPage(QWidget):
         self.sync_timer = QTimer(self)
         self.sync_timer.setInterval(120000)
         self.sync_timer.timeout.connect(self.run_folder_sync)
+        from exchange_ui21 import Exchange21Controls
+        self.exchange21_controls = Exchange21Controls(self, left)
         left_widget = QWidget()
         left_widget.setLayout(left)
         left_widget.setMinimumWidth(260)
