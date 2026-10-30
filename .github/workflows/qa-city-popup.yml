@@ -1,0 +1,28 @@
+name: QA city popup at Windows DPI scale
+on:
+  push:
+    branches:
+      - qa/city-popup-21
+permissions:
+  contents: read
+jobs:
+  windows-qt-autocomplete:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Qt GUI test dependency
+        shell: pwsh
+        run: python -m pip install "PySide6>=6.7,<7"
+      - name: Test popup geometry and completion
+        shell: pwsh
+        run: |
+          Set-Location builder
+          python -m unittest discover -s tests -p "test_popup_12.py" -v
+          if ($LASTEXITCODE -ne 0) { throw "Popup geometry regression" }
