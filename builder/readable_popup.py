@@ -5,11 +5,19 @@ the rendered contact name, especially when Windows text scaling is 125%.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QTimer, Qt
+from PySide6.QtCore import QEvent, QObject, QPoint, QSize, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QListView, QStyledItemDelegate, QToolTip
 
 
 class _FullNameDelegate(QStyledItemDelegate):
+    """Keep the entire city or company name visible at 125–200% Windows DPI."""
+
+    def sizeHint(self, option, index):
+        hint = super().sizeHint(option, index)
+        font_height = option.fontMetrics.height()
+        # Qt's default completion row can vertically crop large fonts.
+        return QSize(hint.width(), max(hint.height(), font_height + 16, 40))
+
     def helpEvent(self, event, view, option, index):
         if event.type() == QEvent.Type.ToolTip and index.isValid():
             name = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
@@ -33,6 +41,8 @@ class ReadablePopup(QObject):
             completer.setPopup(self.view)
         self.view.installEventFilter(self)
         self.view.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.view.setSpacing(3)
+        self.view.setUniformItemSizes(False)
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.view.setItemDelegate(_FullNameDelegate(self.view))
 
@@ -63,13 +73,35 @@ class ReadablePopup(QObject):
         target_width = min(max_width, desired)
         self.view.setMinimumWidth(target_width)
         self.view.setMaximumWidth(max_width)
-        self.view.resize(target_width, self.view.height())
         self.view.setWordWrap(desired > max_width)
         self.view.doItemsLayout()
-        # A long name near the right edge must stay fully on the monitor.
+        # Do not reuse Qt's initial popup height: with a single city match
+        # Windows scaling can crop the last line or bottom of the text.
+        filtered = self.view.model()
+        count = min(
+            filtered.rowCount() if filtered is not None else 0,
+            self.completer.maxVisibleItems(),
+        )
+        font_height = self.view.fontMetrics().height()
+        heights = [
+            max(self.view.sizeHintForRow(row), font_height + 16, 40)
+            for row in range(count)
+        ]
+        max_height = max(72, available.height() - 32)
+        target_height = min(max_height, sum(heights) + count * self.view.spacing() + 12)
+        if not count:
+            target_height = min(max_height, max(44, font_height + 22))
+        self.view.resize(target_width, target_height)
+        # Keep the complete popup visible, including on a second monitor or
+        # when the route dialog is near the bottom/right edge.
         x = min(max(top_left.x(), available.left() + 8),
                 available.right() - target_width - 8)
-        self.view.move(x, self.view.y())
+        preferred_y = top_left.y() + self.source.height()
+        if preferred_y + target_height > available.bottom() - 6:
+            preferred_y = top_left.y() - target_height
+        y = min(max(preferred_y, available.top() + 6),
+                available.bottom() - target_height - 6)
+        self.view.move(x, y)
 
 
 def make_popup_readable(completer, source):
