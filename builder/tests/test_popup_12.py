@@ -53,5 +53,34 @@ class AutocompletePopupTests(unittest.TestCase):
         field.deleteLater()
 
 
+    def test_city_name_and_row_are_fully_visible_at_large_font(self):
+        """Regression: 'Набере' -> 'Набережные Челны' must fit vertically too."""
+        from PySide6.QtGui import QFont
+        from cities import setup_city_completers
+        class Form:
+            fields = {"origin": QLineEdit(), "destination": QLineEdit()}
+        class Db:
+            def routes(self, **_):
+                return []
+        form = Form()
+        field = form.fields["origin"]
+        field.resize(310, 54)
+        field.setFont(QFont("Arial", 16))
+        setup_city_completers(form, Db())
+        completer = field.completer()
+        completer.setCompletionPrefix("Набере")
+        view = completer.popup()
+        sizer = getattr(view, "_readable_popup")
+        sizer.fit()
+        self.assertGreaterEqual(view.height(), view.sizeHintForRow(0) + 10)
+        self.assertGreaterEqual(view.sizeHintForRow(0), view.fontMetrics().height() + 16)
+        self.assertGreaterEqual(
+            view.width(), view.fontMetrics().horizontalAdvance("Набережные Челны") + 48
+        )
+        self.assertEqual(completer.completionModel().rowCount(), 1)
+        field.deleteLater()
+        form.fields["destination"].deleteLater()
+
+
 if __name__ == "__main__":
     unittest.main()
